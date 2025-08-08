@@ -1010,13 +1010,43 @@
                     $('#news-container').style.display = 'none';
 
                     // Update summary card
+                    elements.summary.title.textContent = "Portefølje Oversigt (Henter data...)";
+                    this.renderChart([], 'Henter data for portefølje...');
+
+                    const historyResults = await processInChunks(
+                        state.watchlist,
+                        stock => API.fetchHistory(stock.ticker, state.activePeriod),
+                        8, // Chunk size for API calls
+                        1000 // Delay in ms between chunks
+                    );
+
+                    const successfulHistories = historyResults
+                        .filter(result => result.status === 'fulfilled' && result.value && result.value.length > 0)
+                        .map(result => result.value);
+
+                    const failedTickers = historyResults
+                        .map((result, index) => ({...result, ticker: state.watchlist[index].ticker}))
+                        .filter(result => result.status === 'rejected' || !result.value || result.value.length === 0)
+                        .map(result => result.ticker);
+
+                    if (failedTickers.length > 0) {
+                        showToast(`Kunne ikke hente data for: ${failedTickers.join(', ')}`, 'warning');
+                    }
+
                     elements.summary.title.textContent = "Portefølje Oversigt";
 
-                    const historyPromises = state.watchlist.map(stock => API.fetchHistory(stock.ticker, state.activePeriod));
-                    const histories = await Promise.all(historyPromises);
+                    if (successfulHistories.length === 0) {
+                        showToast('Kunne ikke hente historik for nogen aktier i porteføljen.', 'error');
+                        this.renderChart([], 'Ingen data tilgængelig');
+                        elements.summary.change.textContent = 'N/A';
+                        elements.summary.value.textContent = 'N/A';
+                        elements.summary.topMover.textContent = 'N/A';
+                        elements.summary.bottomMover.textContent = 'N/A';
+                        return;
+                    }
 
                     // Calculate portfolio trend (equal-weighted index)
-                    const portfolioHistory = calculatePortfolioHistory(histories);
+                    const portfolioHistory = calculatePortfolioHistory(successfulHistories);
                     this.renderChart(portfolioHistory, `Portefølje Trend (${state.activePeriod})`);
 
                     if (portfolioHistory.length > 1) {
@@ -1030,9 +1060,9 @@
                         elements.summary.value.textContent = 'N/A';
                     }
 
-                    // Top/Bottom movers
+                    // Top/Bottom movers can still use Promise.all as quotes are cached and less intensive
                     const quotes = await Promise.all(state.watchlist.map(s => API.fetchQuote(s.ticker).then(q => ({...q, ticker: s.ticker}))));
-                    const validQuotes = quotes.filter(q => q.change_percent !== 'N/A' && !isNaN(q.change_percent));
+                    const validQuotes = quotes.filter(q => q.change_percent !== 'N/A' && !isNaN(parseFloat(q.change_percent)));
                     if(validQuotes.length > 0) {
                         validQuotes.sort((a,b) => parseFloat(b.change_percent) - parseFloat(a.change_percent));
                         elements.summary.topMover.textContent = validQuotes[0].ticker;
@@ -1523,6 +1553,20 @@
                     clearTimeout(timeout);
                     timeout = setTimeout(() => func.apply(context, args), delay);
                 };
+            }
+
+            async function processInChunks(items, processor, chunkSize, delay) {
+                let results = [];
+                for (let i = 0; i < items.length; i += chunkSize) {
+                    const chunk = items.slice(i, i + chunkSize);
+                    const chunkPromises = chunk.map(processor);
+                    const chunkResults = await Promise.allSettled(chunkPromises);
+                    results = results.concat(chunkResults);
+                    if (i + chunkSize < items.length) {
+                        await new Promise(resolve => setTimeout(resolve, delay));
+                    }
+                }
+                return results;
             }
 
             function showToast(message, type = 'info') { // type: info, success, warning, error
