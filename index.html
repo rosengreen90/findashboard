@@ -165,15 +165,28 @@
         }
         .watchlist-item:hover .delete-stock { opacity: 1; }
         .watchlist-item.active .delete-stock { color: white; }
-        .watchlist-item.loading {
-            opacity: 0.7;
-            animation: pulse 1.5s infinite ease-in-out;
+        .watchlist-item.loading, .loading-pulse {
+            animation: pulse-bg 1.5s infinite ease-in-out;
         }
 
-        @keyframes pulse {
+        /* More prominent pulse for key metrics */
+        .summary-item p.loading-pulse {
+            color: transparent; /* Hide the '...' text */
+            background-color: var(--bg-tertiary);
+            border-radius: 5px;
+            animation: pulse-opacity 1.5s infinite ease-in-out;
+        }
+
+        @keyframes pulse-bg {
             0% { background-color: var(--bg-secondary); }
             50% { background-color: var(--bg-tertiary); }
             100% { background-color: var(--bg-secondary); }
+        }
+
+        @keyframes pulse-opacity {
+            0% { opacity: 1; }
+            50% { opacity: 0.4; }
+            100% { opacity: 1; }
         }
 
         /* ------------------- */
@@ -945,7 +958,10 @@
                     }
                     elements.watchlistEmpty.classList.add('hidden');
 
-                    state.watchlist.forEach(stock => {
+                    // Create a sorted copy for rendering in alphabetical order
+                    const sortedWatchlist = [...state.watchlist].sort((a, b) => a.ticker.localeCompare(b.ticker));
+
+                    sortedWatchlist.forEach(stock => {
                         const li = document.createElement('li');
                         li.className = `watchlist-item ${state.activeTicker === stock.ticker ? 'active' : ''} loading`;
                         li.dataset.ticker = stock.ticker;
@@ -989,7 +1005,7 @@
                     }
 
                     const quotes = await Promise.all(state.watchlist.map(s => API.fetchQuote(s.ticker)));
-                    const validQuotes = quotes.filter(q => q.change_percent !== 'N/A');
+                    const validQuotes = quotes.filter(q => q.change_percent !== 'N/A' && !isNaN(parseFloat(q.change_percent)));
                     if (validQuotes.length === 0) return;
 
                     const avgChange = validQuotes.reduce((acc, q) => acc + parseFloat(q.change_percent), 0) / validQuotes.length;
@@ -1022,43 +1038,55 @@
                     $('#notes-container').style.display = 'none';
                     $('#news-container').style.display = 'none';
 
-                    // Update summary card
-                    elements.summary.title.textContent = "Portefølje Oversigt (Henter data...)";
+                    // --- SET LOADING STATE ---
+                    elements.summary.title.textContent = "Portefølje Oversigt";
+                    const summaryPElements = $$('#portfolio-summary-card p');
+                    summaryPElements.forEach(el => {
+                        el.textContent = '...';
+                        el.classList.add('loading-pulse');
+                    });
+                    $('#chart-container').classList.add('loading-pulse');
                     this.renderChart([], 'Henter data for portefølje...');
 
+                    // --- FETCH DATA (one-by-one, alphabetically) ---
+                    const sortedWatchlist = [...state.watchlist].sort((a, b) => a.ticker.localeCompare(b.ticker));
+
                     const historyResults = await processInChunks(
-                        state.watchlist,
+                        sortedWatchlist,
                         stock => API.fetchHistory(stock.ticker, state.activePeriod),
-                        8, // Chunk size for API calls
-                        1000 // Delay in ms between chunks
+                        1,    // Fetch one at a time
+                        250   // 250ms delay between each call
                     );
 
+                    // --- PROCESS RESULTS ---
                     const successfulHistories = historyResults
                         .filter(result => result.status === 'fulfilled' && result.value && result.value.length > 0)
                         .map(result => result.value);
 
                     const failedTickers = historyResults
-                        .map((result, index) => ({...result, ticker: state.watchlist[index].ticker}))
+                        .map((result, index) => ({...result, ticker: sortedWatchlist[index].ticker}))
                         .filter(result => result.status === 'rejected' || !result.value || result.value.length === 0)
                         .map(result => result.ticker);
 
                     if (failedTickers.length > 0) {
-                        showToast(`Kunne ikke hente data for: ${failedTickers.join(', ')}`, 'warning');
+                        showToast(`Kunne ikke hente historik for: ${failedTickers.join(', ')}`, 'warning');
                     }
 
-                    elements.summary.title.textContent = "Portefølje Oversigt";
+                    // --- REMOVE LOADING STATE ---
+                    summaryPElements.forEach(el => el.classList.remove('loading-pulse'));
+                    $('#chart-container').classList.remove('loading-pulse');
 
+                    // --- RENDER DATA ---
                     if (successfulHistories.length === 0) {
                         showToast('Kunne ikke hente historik for nogen aktier i porteføljen.', 'error');
                         this.renderChart([], 'Ingen data tilgængelig');
-                        elements.summary.change.textContent = 'N/A';
                         elements.summary.value.textContent = 'N/A';
+                        elements.summary.change.textContent = 'N/A';
                         elements.summary.topMover.textContent = 'N/A';
                         elements.summary.bottomMover.textContent = 'N/A';
                         return;
                     }
 
-                    // Calculate portfolio trend (equal-weighted index)
                     const portfolioHistory = calculatePortfolioHistory(successfulHistories);
                     this.renderChart(portfolioHistory, `Portefølje Trend (${state.activePeriod})`);
 
@@ -1073,7 +1101,6 @@
                         elements.summary.value.textContent = 'N/A';
                     }
 
-                    // Top/Bottom movers can still use Promise.all as quotes are cached and less intensive
                     const quotes = await Promise.all(state.watchlist.map(s => API.fetchQuote(s.ticker).then(q => ({...q, ticker: s.ticker}))));
                     const validQuotes = quotes.filter(q => q.change_percent !== 'N/A' && !isNaN(parseFloat(q.change_percent)));
                     if(validQuotes.length > 0) {
