@@ -165,6 +165,16 @@
         }
         .watchlist-item:hover .delete-stock { opacity: 1; }
         .watchlist-item.active .delete-stock { color: white; }
+        .watchlist-item.loading {
+            opacity: 0.7;
+            animation: pulse 1.5s infinite ease-in-out;
+        }
+
+        @keyframes pulse {
+            0% { background-color: var(--bg-secondary); }
+            50% { background-color: var(--bg-tertiary); }
+            100% { background-color: var(--bg-secondary); }
+        }
 
         /* ------------------- */
         /* --- MAIN CONTENT -- */
@@ -937,13 +947,13 @@
 
                     state.watchlist.forEach(stock => {
                         const li = document.createElement('li');
-                        li.className = `watchlist-item ${state.activeTicker === stock.ticker ? 'active' : ''}`;
+                        li.className = `watchlist-item ${state.activeTicker === stock.ticker ? 'active' : ''} loading`;
                         li.dataset.ticker = stock.ticker;
                         li.innerHTML = `
                             <div class="item-info">${stock.ticker} <span>${stock.name.substring(0, 25)}</span></div>
                             <div class="item-price-change">
-                                <div class="item-price" id="price-${stock.ticker}">Loading...</div>
-                                <div class="item-change" id="change-${stock.ticker}"></div>
+                                <div class="item-price" id="price-${stock.ticker}">...</div>
+                                <div class="item-change" id="change-${stock.ticker}">...</div>
                             </div>
                             <button class="delete-stock" data-ticker="${stock.ticker}">&times;</button>
                         `;
@@ -955,12 +965,15 @@
 
                 async updateWatchlistItem(ticker) {
                     const data = await API.fetchQuote(ticker);
+                    const li = $(`.watchlist-item[data-ticker="${ticker}"]`);
                     const priceEl = $(`#price-${ticker}`);
                     const changeEl = $(`#change-${ticker}`);
-                    if (priceEl && changeEl) {
+
+                    if (li && priceEl && changeEl) {
                         priceEl.textContent = `$${data.price}`;
                         changeEl.textContent = `${data.change_percent}%`;
                         changeEl.className = 'item-change ' + (data.change_percent >= 0 ? 'change-positive' : 'change-negative');
+                        li.classList.remove('loading');
                     }
                 },
 
