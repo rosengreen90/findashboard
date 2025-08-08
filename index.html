@@ -828,13 +828,23 @@
                     try { // Prioritize Twelve Data
                         const url = `https://api.twelvedata.com/quote?symbol=${ticker}&apikey=${state.settings.apiKeys.twelveData}`;
                         const res = await fetch(url);
-                        if (!res.ok) throw new Error('Twelve Data quote fetch failed');
+                        if (!res.ok) throw new Error(`Twelve Data quote fetch failed for ${ticker} with status ${res.status}`);
                         const data = await res.json();
-                        const result = { price: parseFloat(data.close).toFixed(2), change_percent: parseFloat(data.percent_change).toFixed(2) };
-                        await DB.setCache(cacheKey, result, CONFIG.cacheTTL.quotes);
-                        return result;
+
+                        // Robust check for valid data before parsing
+                        if (data && data.close !== undefined && data.percent_change !== undefined) {
+                            const result = {
+                                price: parseFloat(data.close).toFixed(2),
+                                change_percent: parseFloat(data.percent_change).toFixed(2)
+                            };
+                            await DB.setCache(cacheKey, result, CONFIG.cacheTTL.quotes);
+                            return result;
+                        } else {
+                            console.warn(`Invalid quote data for ${ticker}:`, data.message || JSON.stringify(data));
+                            return { price: 'N/A', change_percent: 'N/A' };
+                        }
                     } catch (e) {
-                        console.warn(e.message, "Falling back for quote.");
+                        console.error(e.message);
                         return { price: 'N/A', change_percent: 'N/A' };
                     }
                 },
