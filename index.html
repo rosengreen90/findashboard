@@ -764,13 +764,21 @@
                     }));
                 },
                 loadState: () => {
-                    const savedState = localStorage.getItem('finDashState');
-                    if (savedState) {
-                        const parsed = JSON.parse(savedState);
+                    const savedStateJSON = localStorage.getItem('finDashState');
+                    if (savedStateJSON) {
+                        const savedState = JSON.parse(savedStateJSON);
+
+                        // If saved watchlist is empty but initial state has items, this is likely
+                        // the first run after an update. Keep the hardcoded initial list.
+                        if (Array.isArray(savedState.watchlist) && savedState.watchlist.length === 0 && state.watchlist.length > 0) {
+                            // By deleting it from the loaded state, we keep the default.
+                            delete savedState.watchlist;
+                        }
+
                         // Merge saved state into current state, being careful with nested objects
                         Object.assign(state, {
-                            ...parsed,
-                            settings: { ...state.settings, ...parsed.settings }
+                            ...savedState,
+                            settings: { ...state.settings, ...savedState.settings }
                         });
                     }
                     // Check if essential API keys are missing to determine demo mode
@@ -934,36 +942,37 @@
                     this.updateActiveView();
                 },
 
-                renderWatchlist() {
+                async renderWatchlist() {
                     elements.watchlistList.innerHTML = '';
 
-                    // Add "ALL" item
+                    // Add "ALL" item in a loading state
                     const allItem = document.createElement('li');
                     allItem.className = `watchlist-item ${state.activeTicker === 'ALL' ? 'active' : ''}`;
                     allItem.dataset.ticker = 'ALL';
                     allItem.innerHTML = `
                         <div class="item-info">ALLE <span>Portefølje</span></div>
                         <div class="item-price-change">
-                            <div class="item-price" id="price-ALL"></div>
-                            <div class="item-change" id="change-ALL"></div>
+                            <div class="item-price" id="price-ALL">...</div>
+                            <div class="item-change loading-pulse" id="change-ALL">...</div>
                         </div>
                     `;
                     elements.watchlistList.appendChild(allItem);
 
-                    // Add stock items
                     if (state.watchlist.length === 0) {
                         elements.watchlistEmpty.classList.remove('hidden');
-                        this.updatePortfolioMetrics(); // To clear the ALL metrics
+                        $('#price-ALL').textContent = '';
+                        $('#change-ALL').textContent = '';
+                        $('#change-ALL').classList.remove('loading-pulse');
                         return;
                     }
                     elements.watchlistEmpty.classList.add('hidden');
 
-                    // Create a sorted copy for rendering in alphabetical order
                     const sortedWatchlist = [...state.watchlist].sort((a, b) => a.ticker.localeCompare(b.ticker));
 
+                    // Render all stock items in their loading state first
                     sortedWatchlist.forEach(stock => {
                         const li = document.createElement('li');
-                        li.className = `watchlist-item ${state.activeTicker === stock.ticker ? 'active' : ''} loading`;
+                        li.className = `watchlist-item loading`;
                         li.dataset.ticker = stock.ticker;
                         li.innerHTML = `
                             <div class="item-info">${stock.ticker} <span>${stock.name.substring(0, 25)}</span></div>
@@ -974,9 +983,18 @@
                             <button class="delete-stock" data-ticker="${stock.ticker}">&times;</button>
                         `;
                         elements.watchlistList.appendChild(li);
-                        this.updateWatchlistItem(stock.ticker);
                     });
-                    this.updatePortfolioMetrics();
+
+                    // Now, fetch and update them one by one
+                    await processInChunks(
+                        sortedWatchlist,
+                        stock => this.updateWatchlistItem(stock.ticker),
+                        1,
+                        200
+                    );
+
+                    // After all individual stocks are fetched, calculate and render the "ALL" summary
+                    await this.updatePortfolioMetrics();
                 },
 
                 async updateWatchlistItem(ticker) {
@@ -994,25 +1012,31 @@
                 },
 
                 async updatePortfolioMetrics() {
+                    // This function NO LONGER fetches. It calculates from cached data.
                     const priceEl = $('#price-ALL');
                     const changeEl = $('#change-ALL');
                     if (!priceEl || !changeEl) return;
 
-                    if(state.watchlist.length === 0){
-                        priceEl.textContent = '';
-                        changeEl.textContent = '';
-                        return;
+                    let totalChange = 0;
+                    let validCount = 0;
+                    for (const stock of state.watchlist) {
+                        const cachedQuote = await DB.getCache(`quote-${stock.ticker}`);
+                        if (cachedQuote && cachedQuote.change_percent !== 'N/A' && !isNaN(parseFloat(cachedQuote.change_percent))) {
+                            totalChange += parseFloat(cachedQuote.change_percent);
+                            validCount++;
+                        }
                     }
 
-                    const quotes = await Promise.all(state.watchlist.map(s => API.fetchQuote(s.ticker)));
-                    const validQuotes = quotes.filter(q => q.change_percent !== 'N/A' && !isNaN(parseFloat(q.change_percent)));
-                    if (validQuotes.length === 0) return;
+                    changeEl.classList.remove('loading-pulse');
+                    priceEl.textContent = 'Portefølje';
 
-                    const avgChange = validQuotes.reduce((acc, q) => acc + parseFloat(q.change_percent), 0) / validQuotes.length;
-
-                    priceEl.textContent = 'Portefølje'; // No combined price, just change
-                    changeEl.textContent = `${avgChange.toFixed(2)}%`;
-                    changeEl.className = 'item-change ' + (avgChange >= 0 ? 'change-positive' : 'change-negative');
+                    if (validCount > 0) {
+                        const avgChange = totalChange / validCount;
+                        changeEl.textContent = `${avgChange.toFixed(2)}%`;
+                        changeEl.className = 'item-change ' + (avgChange >= 0 ? 'change-positive' : 'change-negative');
+                    } else {
+                        changeEl.textContent = 'N/A';
+                    }
                 },
 
                 updateActiveView() {
